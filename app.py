@@ -4,13 +4,15 @@ import numpy as np
 import plotly.graph_objects as go
 from scipy.signal import savgol_filter
 from datetime import timedelta
+import os
 
 st.set_page_config(layout="wide")
 
-# ✅ LOGO (CENTERED)
+# LOGO
+logo_path = os.path.join(os.path.dirname(__file__), "Envision.png")
 col1, col2, col3 = st.columns([1,2,1])
 with col2:
-    st.image("Envision.png", width=300)
+    st.image(logo_path, width=300)
 
 st.title("Wind Farm Performance Analytics Dashboard")
 
@@ -147,7 +149,7 @@ def load_reference(site):
 
 ref_curve = load_reference(site)
 
-# TURBINE PROCESSING
+# TURBINE PROCESSING (unchanged)
 def process_turbine(turbine):
 
     df_t = df[df["Name"]==turbine].copy()
@@ -188,86 +190,8 @@ def process_turbine(turbine):
     return df_t,merged,avg_dev
 
 
-# SITE SUMMARY
-site_results=[]
+# COMPARE TWO TURBINES COMMENT
 
-for turbine in df["Name"].unique():
-
-    result = process_turbine(turbine)
-
-    if result:
-        _,_,avg_dev = result
-
-        site_results.append({
-            "Turbine":turbine,
-            "Deviation_%":avg_dev
-        })
-
-results_df = pd.DataFrame(site_results)
-
-if results_df.empty:
-    st.warning("No sufficient data available")
-    st.stop()
-
-results_df["Status"] = np.where(
-    results_df["Deviation_%"]<-2,
-    "Underperforming",
-    np.where(
-        results_df["Deviation_%"]>2,
-        "Overperforming",
-        "Within Limit"
-    )
-)
-
-# KPI
-st.subheader(f"{site} Site Performance")
-
-col1,col2,col3,col4 = st.columns(4)
-
-col1.metric("Total Turbines",len(results_df))
-col2.metric("Underperforming",len(results_df[results_df["Status"]=="Underperforming"]))
-col3.metric("Overperforming",len(results_df[results_df["Status"]=="Overperforming"]))
-col4.metric("Within Limit",len(results_df[results_df["Status"]=="Within Limit"]))
-
-# DISPLAY MODE
-mode = st.radio(
-    "Display Mode",
-    ["Show Single Turbine","Compare Two Turbines","Show All Turbines"]
-)
-
-# SINGLE TURBINE
-if mode=="Show Single Turbine":
-
-    selected = st.selectbox("Select Turbine",results_df["Turbine"])
-
-    df_filtered,merged,avg_dev = process_turbine(selected)
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatter(
-        x=df_filtered[wind_col],
-        y=df_filtered[power_col],
-        mode='markers',
-        name="SCADA Data"
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=merged["WindBin"],
-        y=merged["AvgPower"],
-        mode='lines+markers',
-        name="Actual Curve"
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=merged["WindBin"],
-        y=merged["RefPower"],
-        mode='lines',
-        name="Reference Curve"
-    ))
-
-    st.plotly_chart(fig,use_container_width=True)
-
-# COMPARE TWO TURBINES
 elif mode=="Compare Two Turbines":
 
     t1 = st.selectbox("Turbine 1",results_df["Turbine"])
@@ -278,31 +202,24 @@ elif mode=="Compare Two Turbines":
 
     fig = go.Figure()
 
-    fig.add_trace(go.Scatter(
-        x=merged1["WindBin"],
-        y=merged1["AvgPower"],
-        mode='lines+markers',
-        name=t1
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=merged2["WindBin"],
-        y=merged2["AvgPower"],
-        mode='lines+markers',
-        name=t2
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=merged1["WindBin"],
-        y=merged1["RefPower"],
-        mode='lines',
-        name="Reference",
-        line=dict(dash='dash')
-    ))
+    fig.add_trace(go.Scatter(x=merged1["WindBin"],y=merged1["AvgPower"],mode='lines+markers',name=t1))
+    fig.add_trace(go.Scatter(x=merged2["WindBin"],y=merged2["AvgPower"],mode='lines+markers',name=t2))
+    fig.add_trace(go.Scatter(x=merged1["WindBin"],y=merged1["RefPower"],mode='lines',name="Reference",line=dict(dash='dash')))
 
     st.plotly_chart(fig,use_container_width=True)
 
-# ALL TURBINES
+    # ADDED COMMENT
+    if dev1 < dev2:
+        better = t2
+        worse = t1
+    else:
+        better = t1
+        worse = t2
+
+    st.info(f" {better} is performing better than {worse} based on lower deviation from reference curve.")
+
+# ALL TURBINES COMMENT
+
 else:
 
     cols = st.columns(2)
@@ -337,19 +254,15 @@ else:
             line=dict(dash='dash')
         ))
 
+        # ADD STACKING COMMENT
+        comment = ""
+        if abs(avg_dev) >= 20:
+            comment = "Possible Wake / Stacking Effect"
+
         fig.update_layout(
-            title=f"{turbine} | Dev {round(avg_dev,1)} %",
+            title=f"{turbine} | Dev {round(avg_dev,1)} % {comment}",
             height=350
         )
 
         cols[i%2].plotly_chart(fig,use_container_width=True)
-
         i+=1
-
-# TABLE
-st.subheader("Turbine Ranking")
-
-results_df = results_df.sort_values("Deviation_%")
-results_df = results_df.sort_values("Status")
-
-st.dataframe(results_df)
