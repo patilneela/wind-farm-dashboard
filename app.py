@@ -10,7 +10,7 @@ st.set_page_config(layout="wide")
 # ✅ LOGO (CENTERED)
 col1, col2, col3 = st.columns([1,2,1])
 with col2:
-    st.image("logo.png", width=300)
+    st.image("Envision.png", width=300)
 
 st.title("Wind Farm Performance Analytics Dashboard")
 
