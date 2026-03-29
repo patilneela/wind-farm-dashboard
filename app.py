@@ -6,6 +6,12 @@ from scipy.signal import savgol_filter
 from datetime import timedelta
 
 st.set_page_config(layout="wide")
+
+# ✅ LOGO (CENTERED)
+col1, col2, col3 = st.columns([1,2,1])
+with col2:
+    st.image("logo.png", width=300)
+
 st.title("Wind Farm Performance Analytics Dashboard")
 
 # FILE
@@ -38,7 +44,6 @@ site = st.sidebar.selectbox(
      "Renew-4 Kudligi","Renew Otha","Cleanmax Honavad"," Blueleaf Agar","JSW_Sandur","India_Hero_Doni"]
 )
 
-
 # LOAD SCADA
 @st.cache_data
 def load_scada(file):
@@ -61,7 +66,6 @@ def load_scada(file):
 
 
 df,wind_col,power_col,time_col = load_scada(uploaded_file)
-
 
 # DATE FILTER
 st.sidebar.subheader("Immediate Date Filter")
@@ -91,7 +95,6 @@ else:
     end_date = pd.to_datetime(date_range[1])
 
 df = df[(df[time_col] >= start_date) & (df[time_col] <= end_date)]
-
 
 # LOAD REFERENCE
 @st.cache_data
@@ -143,7 +146,6 @@ def load_reference(site):
 
 
 ref_curve = load_reference(site)
-
 
 # TURBINE PROCESSING
 def process_turbine(turbine):
@@ -207,7 +209,6 @@ if results_df.empty:
     st.warning("No sufficient data available")
     st.stop()
 
-
 results_df["Status"] = np.where(
     results_df["Deviation_%"]<-2,
     "Underperforming",
@@ -217,7 +218,6 @@ results_df["Status"] = np.where(
         "Within Limit"
     )
 )
-
 
 # KPI
 st.subheader(f"{site} Site Performance")
@@ -229,13 +229,11 @@ col2.metric("Underperforming",len(results_df[results_df["Status"]=="Underperform
 col3.metric("Overperforming",len(results_df[results_df["Status"]=="Overperforming"]))
 col4.metric("Within Limit",len(results_df[results_df["Status"]=="Within Limit"]))
 
-
 # DISPLAY MODE
 mode = st.radio(
     "Display Mode",
     ["Show Single Turbine","Compare Two Turbines","Show All Turbines"]
 )
-
 
 # SINGLE TURBINE
 if mode=="Show Single Turbine":
@@ -268,7 +266,6 @@ if mode=="Show Single Turbine":
     ))
 
     st.plotly_chart(fig,use_container_width=True)
-
 
 # COMPARE TWO TURBINES
 elif mode=="Compare Two Turbines":
@@ -305,7 +302,6 @@ elif mode=="Compare Two Turbines":
 
     st.plotly_chart(fig,use_container_width=True)
 
-
 # ALL TURBINES
 else:
 
@@ -318,7 +314,6 @@ else:
 
         fig = go.Figure()
 
-        # ADDED SCATTER
         fig.add_trace(go.Scatter(
             x=df_filtered[wind_col],
             y=df_filtered[power_col],
@@ -349,8 +344,7 @@ else:
 
         cols[i%2].plotly_chart(fig,use_container_width=True)
 
-        i+=1;
-
+        i+=1
 
 # TABLE
 st.subheader("Turbine Ranking")
