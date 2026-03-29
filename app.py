@@ -8,7 +8,7 @@ import os
 
 st.set_page_config(layout="wide")
 
-# ✅ LOGO
+# LOGO
 logo_path = os.path.join(os.path.dirname(__file__), "Envision.png")
 col1, col2, col3 = st.columns([1,2,1])
 with col2:
@@ -266,13 +266,13 @@ elif mode=="Compare Two Turbines":
 
     st.plotly_chart(fig,use_container_width=True)
 
-    # ✅ COMMENT
+    #  COMMENT
     if dev1 < dev2:
         better, worse = t2, t1
     else:
         better, worse = t1, t2
 
-    st.info(f"👉 {better} performs better than {worse} based on deviation from reference curve.")
+    st.info(f" {better} performs better than {worse} based on deviation from reference curve.")
 
 # ALL
 else:
@@ -291,7 +291,7 @@ else:
 
         comment = ""
         if abs(avg_dev) >= 20:
-            comment = "⚠️ Stacking Effect Suspected"
+            comment = " Stacking Effect Suspected"
 
         fig.update_layout(
             title=f"{turbine} | Dev {round(avg_dev,1)} % {comment}",
