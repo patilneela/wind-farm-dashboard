@@ -58,9 +58,6 @@ mode = st.sidebar.radio(
     ["Single Turbine", "Compare Turbines", "Show All Turbines"]
 )
 
-# ✅ NEW TOGGLE (NO LOGIC BREAK)
-include_zero = st.sidebar.checkbox("Show Zero Power Points", value=True)
-
 # LOAD SCADA
 @st.cache_data
 def load_scada(file):
@@ -82,7 +79,7 @@ def load_scada(file):
 
 df, wind_col, power_col, time_col = load_scada(uploaded_file)
 
-# DATE FILTER (UNCHANGED)
+# ================= DATE + TIME FILTER =================
 st.sidebar.markdown("## 📅 Select Date & Time Range")
 
 min_date = df[time_col].min()
@@ -110,6 +107,7 @@ start_datetime = pd.to_datetime(f"{start_date} {start_time}")
 end_datetime = pd.to_datetime(f"{end_date} {end_time}")
 
 df = df[(df[time_col] >= start_datetime) & (df[time_col] <= end_datetime)]
+# =====================================================
 
 # HEADER
 num_turbines = df["Name"].nunique()
@@ -118,7 +116,7 @@ total_capacity = num_turbines * capacity_per_turbine
 
 st.subheader(f"{site} | {num_turbines} Turbines | {capacity_per_turbine} MW Each | Total: {round(total_capacity,2)} MW")
 st.markdown(f" Date Range: {start_datetime} → {end_datetime}")
-st.info(f"Total Data Points: {len(df)}")
+st.info(f"Total Data Points After Filter: {len(df)}")
 
 # LOAD REFERENCE
 @st.cache_data
@@ -146,23 +144,20 @@ def load_reference(site):
 
 ref_curve = load_reference(site)
 
-# PROCESS (UPDATED SMART LOGIC)
+# PROCESS
 def process_turbine(t):
     df_all = df[df["Name"]==t].copy()
 
-    # FULL SCATTER DATA
-    if include_zero:
-        df_scatter = df_all[(df_all[wind_col]>=0)&(df_all[wind_col]<=25)]
-    else:
-        df_scatter = df_all[(df_all[wind_col]>=3)&(df_all[wind_col]<=25)&(df_all[power_col]>0)]
+    # 🔥 FIX: Scatter uses ALL data (no filtering)
+    df_scatter = df_all.copy()
 
-    # CURVE DATA (ORIGINAL LOGIC KEPT)
+    # ORIGINAL CURVE LOGIC (UNCHANGED)
     df_curve = df_all[(df_all[wind_col]>=3)&(df_all[wind_col]<=25)&(df_all[power_col]>0)]
 
-    if len(df_curve) < 30:
+    if len(df_curve)<30:
         return None
 
-    availability = (len(df_curve)/len(df_all))*100 if len(df_all)>0 else 0
+    std_dev = df_curve[power_col].std()
 
     df_curve["WindBin"] = (df_curve[wind_col]/BIN_SIZE).round()*BIN_SIZE
     actual = df_curve.groupby("WindBin").agg(AvgPower=(power_col,"mean")).reset_index()
@@ -176,19 +171,22 @@ def process_turbine(t):
     merged["Deviation_%"] = ((merged["AvgPower"]-merged["RefPower"])/merged["RefPower"])*100
     avg_dev = merged["Deviation_%"].mean(skipna=True)
 
-    return df_scatter, merged, avg_dev, availability
+    availability = (len(df_curve)/len(df_all))*100 if len(df_all)>0 else 0
+
+    return df_scatter, merged, avg_dev, std_dev, availability
 
 # GRAPH
 def plot_graph(df_scatter, merged, title, dev, availability):
     color = "green" if -2 <= dev <= 2 else "orange" if dev < -2 else "red"
 
     fig = go.Figure()
+
     fig.add_trace(go.Scatter(
         x=df_scatter[wind_col],
         y=df_scatter[power_col],
         mode='markers',
         marker=dict(size=3, opacity=0.3),
-        name="Raw Data"
+        name="All Data"
     ))
 
     fig.add_trace(go.Scatter(
@@ -213,7 +211,7 @@ def plot_graph(df_scatter, merged, title, dev, availability):
 
     return fig
 
-# COMMENT (UNCHANGED)
+# COMMENT
 def generate_comment(dev):
     if dev is None:
         return "Data not available"
@@ -257,7 +255,7 @@ for t in turbines_to_show:
     if not res:
         continue
 
-    df_scatter, merged, dev, availability = res
+    df_scatter, merged, dev, std, availability = res
 
     with cols[i % 2]:
         fig = plot_graph(df_scatter, merged, t, dev, availability)
