@@ -6,7 +6,11 @@ from scipy.signal import savgol_filter
 from datetime import timedelta
 import os
 import io
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
+
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Image,
+    Table, TableStyle, PageBreak
+)
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
@@ -98,11 +102,15 @@ def process_turbine(t):
 
     valid = merged["AvgPower"].notna()
     if valid.sum() > 5:
-        merged.loc[valid, "AvgPower"] = savgol_filter(merged.loc[valid, "AvgPower"], 5, 2)
+        merged.loc[valid, "AvgPower"] = savgol_filter(
+            merged.loc[valid, "AvgPower"], 5, 2
+        )
 
-    merged["Deviation_%"] = ((merged["AvgPower"] - merged["RefPower"]) / merged["RefPower"]) * 100
+    merged["Deviation_%"] = (
+        (merged["AvgPower"] - merged["RefPower"]) / merged["RefPower"]
+    ) * 100
+
     dev = merged["Deviation_%"].mean()
-
     availability = (len(df_curve) / len(d)) * 100
 
     return df_scatter, merged, dev, availability
@@ -110,18 +118,18 @@ def process_turbine(t):
 # ---------------- COMMENT ----------------
 def comment(dev):
     if dev < -10:
-        return "Severe underperformance"
+        return "🔴 Severe underperformance"
     elif dev < -2:
-        return "Underperformance"
+        return "🟠 Underperformance"
     elif dev > 8:
-        return "High overperformance"
+        return "🟢 High overperformance"
     elif dev > 2:
-        return "Slight overperformance"
+        return "🟢 Slight overperformance"
     else:
-        return "Normal"
+        return "🟢 Normal"
 
 # ---------------- GRAPH ----------------
-def plot_graph(df_scatter, merged, t):
+def plot_graph(df_scatter, merged):
     fig = go.Figure()
 
     fig.add_trace(go.Scatter(
@@ -159,13 +167,21 @@ for t in df["Name"].unique():
 
     df_scatter, merged, dev, avail = res
 
-    fig = plot_graph(df_scatter, merged, t)
+    fig = plot_graph(df_scatter, merged)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.write(f"Comment: {comment(dev)}")
+    st.write(f"Deviation: {round(dev,2)}%")
+    st.write(f"Availability: {round(avail,1)}%")
+    st.write(comment(dev))
 
-    img_bytes = fig.to_image(format="png")
-    images.append((t, img_bytes, dev, avail, comment(dev)))
+    # SAFE IMAGE EXPORT
+    try:
+        img_bytes = fig.to_image(format="png", engine="kaleido", width=900, height=500)
+    except:
+        img_bytes = None
+
+    if img_bytes:
+        images.append((t, img_bytes, dev, avail, comment(dev)))
 
     results.append([t, round(dev,2), round(avail,1)])
 
@@ -174,7 +190,7 @@ st.subheader("Turbine Ranking")
 df_res = pd.DataFrame(results, columns=["Turbine","Deviation","Availability"])
 st.dataframe(df_res)
 
-# ---------------- PDF GENERATION ----------------
+# ---------------- PDF ----------------
 def get_color(dev):
     if dev < -10:
         return colors.red
@@ -193,32 +209,27 @@ def create_pdf():
     styles = getSampleStyleSheet()
     elements = []
 
-    # -------- HEADER --------
-    if os.path.exists(logo_path):
-        elements.append(Image(logo_path, width=120, height=50))
-
     elements.append(Paragraph("Power Curve Analytics Report", styles["Title"]))
     elements.append(Spacer(1, 10))
     elements.append(Paragraph(f"Date Range: {start} to {end}", styles["Normal"]))
-    elements.append(Paragraph(f"Total Turbines: {len(results)}", styles["Normal"]))
-    elements.append(Paragraph(f"Total Data Points: {len(df)}", styles["Normal"]))
     elements.append(Spacer(1, 20))
 
-    # -------- TURBINE PAGES --------
     for t, img, dev, avail, comm in images:
         elements.append(Paragraph(f"Turbine: {t}", styles["Heading2"]))
-        elements.append(Spacer(1, 5))
         elements.append(Paragraph(f"Deviation: {round(dev,2)}%", styles["Normal"]))
         elements.append(Paragraph(f"Availability: {round(avail,1)}%", styles["Normal"]))
         elements.append(Paragraph(f"Comment: {comm}", styles["Normal"]))
         elements.append(Spacer(1, 10))
 
-        img_file = io.BytesIO(img)
-        elements.append(Image(img_file, width=480, height=260))
+        if img:
+            img_file = io.BytesIO(img)
+            elements.append(Image(img_file, width=480, height=260))
+        else:
+            elements.append(Paragraph("Graph not available", styles["Normal"]))
 
-        elements.append(PageBreak())  # 👈 one turbine per page
+        elements.append(PageBreak())
 
-    # -------- RANKING TABLE --------
+    # TABLE
     table_data = [["Turbine","Deviation","Availability"]] + results
     table = Table(table_data)
 
@@ -245,8 +256,8 @@ def create_pdf():
 pdf = create_pdf()
 
 st.download_button(
-    "Download Full Professional Report (PDF)",
+    "⬇ Download Full Report (PDF)",
     data=pdf,
-    file_name="WindFarm_Professional_Report.pdf",
+    file_name="WindFarm_Report.pdf",
     mime="application/pdf"
 )
