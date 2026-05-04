@@ -6,7 +6,7 @@ from scipy.signal import savgol_filter
 from datetime import timedelta
 import os
 import io
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
@@ -14,10 +14,11 @@ st.set_page_config(layout="wide")
 
 # ---------------- LOGO ----------------
 logo_path = os.path.join(os.path.dirname(__file__), "Envision.png")
+
 col1, col2, col3 = st.columns([1,2,1])
 with col2:
     if os.path.exists(logo_path):
-        st.image(logo_path, width=300)
+        st.image(logo_path, width=250)
 
 st.title("Power Curve Analytics Report")
 
@@ -53,7 +54,7 @@ def load_scada(file):
 
 df, wind_col, power_col, time_col = load_scada(uploaded_file)
 
-# ---------------- DATE FIX ----------------
+# ---------------- DATE FILTER ----------------
 min_date = df[time_col].min()
 max_date = df[time_col].max()
 
@@ -68,6 +69,7 @@ end = pd.to_datetime(date_range[1]) + pd.Timedelta(days=1)
 df = df[(df[time_col] >= start) & (df[time_col] < end)]
 
 st.info(f"Data Points: {len(df)}")
+st.markdown(f"**Date Range:** {start} → {end}")
 
 # ---------------- REFERENCE ----------------
 @st.cache_data
@@ -83,7 +85,6 @@ def process_turbine(t):
     d = df[df["Name"] == t]
 
     df_scatter = d.copy()
-
     df_curve = d[(d[wind_col] >= 3) & (d[power_col] > 0)]
 
     if len(df_curve) < 20:
@@ -164,46 +165,76 @@ for t in df["Name"].unique():
     st.write(f"Comment: {comment(dev)}")
 
     img_bytes = fig.to_image(format="png")
-    images.append((t, img_bytes, dev, avail))
+    images.append((t, img_bytes, dev, avail, comment(dev)))
 
     results.append([t, round(dev,2), round(avail,1)])
 
 # ---------------- TABLE ----------------
-st.subheader("Ranking")
+st.subheader("Turbine Ranking")
 df_res = pd.DataFrame(results, columns=["Turbine","Deviation","Availability"])
 st.dataframe(df_res)
 
 # ---------------- PDF GENERATION ----------------
+def get_color(dev):
+    if dev < -10:
+        return colors.red
+    elif dev < -2:
+        return colors.orange
+    elif dev > 8:
+        return colors.green
+    elif dev > 2:
+        return colors.lightgreen
+    else:
+        return colors.whitesmoke
+
 def create_pdf():
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer)
     styles = getSampleStyleSheet()
-
     elements = []
 
-    elements.append(Paragraph("Wind Farm Report", styles["Title"]))
+    # -------- HEADER --------
+    if os.path.exists(logo_path):
+        elements.append(Image(logo_path, width=120, height=50))
+
+    elements.append(Paragraph("Power Curve Analytics Report", styles["Title"]))
+    elements.append(Spacer(1, 10))
+    elements.append(Paragraph(f"Date Range: {start} to {end}", styles["Normal"]))
+    elements.append(Paragraph(f"Total Turbines: {len(results)}", styles["Normal"]))
+    elements.append(Paragraph(f"Total Data Points: {len(df)}", styles["Normal"]))
     elements.append(Spacer(1, 20))
 
-    for t, img, dev, avail in images:
-        elements.append(Paragraph(f"{t}", styles["Heading2"]))
+    # -------- TURBINE PAGES --------
+    for t, img, dev, avail, comm in images:
+        elements.append(Paragraph(f"Turbine: {t}", styles["Heading2"]))
+        elements.append(Spacer(1, 5))
         elements.append(Paragraph(f"Deviation: {round(dev,2)}%", styles["Normal"]))
         elements.append(Paragraph(f"Availability: {round(avail,1)}%", styles["Normal"]))
-        elements.append(Paragraph(f"Comment: {comment(dev)}", styles["Normal"]))
-        elements.append(Spacer(1,10))
+        elements.append(Paragraph(f"Comment: {comm}", styles["Normal"]))
+        elements.append(Spacer(1, 10))
 
         img_file = io.BytesIO(img)
-        elements.append(Image(img_file, width=400, height=250))
-        elements.append(Spacer(1,20))
+        elements.append(Image(img_file, width=480, height=260))
 
-    # Table
-    table = Table([["Turbine","Deviation","Availability"]] + results)
+        elements.append(PageBreak())  # 👈 one turbine per page
 
-    table.setStyle(TableStyle([
+    # -------- RANKING TABLE --------
+    table_data = [["Turbine","Deviation","Availability"]] + results
+    table = Table(table_data)
+
+    style = TableStyle([
         ('BACKGROUND',(0,0),(-1,0),colors.grey),
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
         ('GRID',(0,0),(-1,-1),1,colors.black)
-    ]))
+    ])
 
+    for i, row in enumerate(results, start=1):
+        style.add('BACKGROUND', (1,i), (1,i), get_color(row[1]))
+
+    table.setStyle(style)
+
+    elements.append(Paragraph("Turbine Ranking", styles["Heading2"]))
+    elements.append(Spacer(1,10))
     elements.append(table)
 
     doc.build(elements)
@@ -214,8 +245,8 @@ def create_pdf():
 pdf = create_pdf()
 
 st.download_button(
-    "Download Full Report (PDF)",
+    "Download Full Professional Report (PDF)",
     data=pdf,
-    file_name="Wind_Report.pdf",
+    file_name="WindFarm_Professional_Report.pdf",
     mime="application/pdf"
 )
