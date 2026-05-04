@@ -41,7 +41,6 @@ SITE_CAPACITY = {site:3.3 for site in [
 
 REF_FILE = "India site Standard & Theoretical PC data 1234.xlsx"
 BIN_SIZE = 0.5
-RATED_POWER = 3400.0
 
 # SIDEBAR
 st.sidebar.subheader("Upload SCADA File")
@@ -79,7 +78,7 @@ def load_scada(file):
 
 df, wind_col, power_col, time_col = load_scada(uploaded_file)
 
-# ================= DATE + TIME FILTER =================
+# DATE FILTER
 st.sidebar.markdown("## 📅 Select Date & Time Range")
 
 min_date = df[time_col].min()
@@ -98,16 +97,12 @@ else:
     start_date = date_range
     end_date = date_range
 
-st.sidebar.markdown("### ⏱ Select Time Range")
-
-start_time = st.sidebar.time_input("Start Time", value=pd.to_datetime("00:00:00").time())
-end_time = st.sidebar.time_input("End Time", value=pd.to_datetime("23:59:59").time())
-
-start_datetime = pd.to_datetime(f"{start_date} {start_time}")
-end_datetime = pd.to_datetime(f"{end_date} {end_time}")
+start_datetime = pd.to_datetime(start_date)
+end_datetime = pd.to_datetime(end_date) + timedelta(days=1) - timedelta(seconds=1)
 
 df = df[(df[time_col] >= start_datetime) & (df[time_col] <= end_datetime)]
-# =====================================================
+
+st.info(f"Total Data Points After Filter: {len(df)}")
 
 # HEADER
 num_turbines = df["Name"].nunique()
@@ -115,8 +110,6 @@ capacity_per_turbine = SITE_CAPACITY.get(site, 3.3)
 total_capacity = num_turbines * capacity_per_turbine
 
 st.subheader(f"{site} | {num_turbines} Turbines | {capacity_per_turbine} MW Each | Total: {round(total_capacity,2)} MW")
-st.markdown(f" Date Range: {start_datetime} → {end_datetime}")
-st.info(f"Total Data Points After Filter: {len(df)}")
 
 # LOAD REFERENCE
 @st.cache_data
@@ -125,8 +118,7 @@ def load_reference(site):
 
     for r in range(ref_raw.shape[0]):
         for c in range(ref_raw.shape[1]):
-            cell = str(ref_raw.iloc[r,c])
-            if site.lower() in cell.lower():
+            if site.lower() in str(ref_raw.iloc[r,c]).lower():
                 ref = ref_raw.iloc[r+2:r+60,[c-1,c+3]].copy()
                 ref.columns=["WindSpeed","RefPower"]
                 ref = ref.dropna()
@@ -148,16 +140,12 @@ ref_curve = load_reference(site)
 def process_turbine(t):
     df_all = df[df["Name"]==t].copy()
 
-    # 🔥 FIX: Scatter uses ALL data (no filtering)
     df_scatter = df_all.copy()
 
-    # ORIGINAL CURVE LOGIC (UNCHANGED)
     df_curve = df_all[(df_all[wind_col]>=3)&(df_all[wind_col]<=25)&(df_all[power_col]>0)]
 
     if len(df_curve)<30:
         return None
-
-    std_dev = df_curve[power_col].std()
 
     df_curve["WindBin"] = (df_curve[wind_col]/BIN_SIZE).round()*BIN_SIZE
     actual = df_curve.groupby("WindBin").agg(AvgPower=(power_col,"mean")).reset_index()
@@ -173,11 +161,19 @@ def process_turbine(t):
 
     availability = (len(df_curve)/len(df_all))*100 if len(df_all)>0 else 0
 
-    return df_scatter, merged, avg_dev, std_dev, availability
+    return df_scatter, merged, avg_dev, availability
 
-# GRAPH
+# GRAPH (🔥 FIXED SCATTER VISIBILITY)
 def plot_graph(df_scatter, merged, title, dev, availability):
-    color = "green" if -2 <= dev <= 2 else "orange" if dev < -2 else "red"
+
+    n = len(df_scatter)
+
+    if n < 200:
+        size, op = 7, 0.9
+    elif n < 1000:
+        size, op = 5, 0.6
+    else:
+        size, op = 3, 0.3
 
     fig = go.Figure()
 
@@ -185,8 +181,8 @@ def plot_graph(df_scatter, merged, title, dev, availability):
         x=df_scatter[wind_col],
         y=df_scatter[power_col],
         mode='markers',
-        marker=dict(size=3, opacity=0.3),
-        name="All Data"
+        marker=dict(size=size, opacity=op),
+        name=f"Scatter ({n})"
     ))
 
     fig.add_trace(go.Scatter(
@@ -204,34 +200,7 @@ def plot_graph(df_scatter, merged, title, dev, availability):
         name="Reference Curve"
     ))
 
-    fig.update_layout(
-        title=f"{title} (Dev: {round(dev,2)}%) | Data: {round(availability,1)}%",
-        title_font=dict(color=color)
-    )
-
     return fig
-
-# COMMENT
-def generate_comment(dev):
-    if dev is None:
-        return "Data not available"
-
-    dev = round(dev, 2)
-
-    if dev < -72:
-        return f"🔴 Dev: {dev}% → Extreme issue"
-    elif dev < -10:
-        return f"🔴 Dev: {dev}% → Severe underperformance"
-    elif dev < -2:
-        return f"🟠 Dev: {dev}% → Underperformance"
-    elif dev > 72:
-        return f"🟣 Dev: {dev}% → Abnormal high"
-    elif dev > 8:
-        return f"🟢 Dev: {dev}% → High overperformance"
-    elif dev > 2:
-        return f"🟢 Dev: {dev}% → Slight overperformance"
-    else:
-        return f"🟢 Dev: {dev}% → Normal performance"
 
 # MODE
 turbines = df["Name"].unique()
@@ -244,34 +213,17 @@ else:
     turbines_to_show = turbines
 
 # DISPLAY
-cols = st.columns(2)
-i = 0
 results = []
-zip_buffer = io.BytesIO()
-zip_file = zipfile.ZipFile(zip_buffer, "w")
 
 for t in turbines_to_show:
     res = process_turbine(t)
     if not res:
         continue
 
-    df_scatter, merged, dev, std, availability = res
+    df_scatter, merged, dev, availability = res
 
-    with cols[i % 2]:
-        fig = plot_graph(df_scatter, merged, t, dev, availability)
-        st.plotly_chart(fig, use_container_width=True)
-        st.markdown("Analysis")
-        st.code(generate_comment(dev))
-
-        if availability < 20:
-            st.warning(f"⚠ Low data availability: {round(availability,1)}%")
-
-    if KALEIDO_AVAILABLE:
-        try:
-            img_bytes = fig.to_image(format="png")
-            zip_file.writestr(f"{t}.png", img_bytes)
-        except:
-            pass
+    fig = plot_graph(df_scatter, merged, t, dev, availability)
+    st.plotly_chart(fig, use_container_width=True)
 
     results.append({
         "Turbine": t,
@@ -279,20 +231,23 @@ for t in turbines_to_show:
         "Availability_%": round(availability,1)
     })
 
-    i += 1
-
-# TABLE
+# TABLE WITH COLORS
 st.subheader("Turbine Ranking")
 
 results_df = pd.DataFrame(results).sort_values(by="Deviation_%")
-st.dataframe(results_df, use_container_width=True)
 
-zip_file.writestr("report.csv", results_df.to_csv(index=False))
-zip_file.close()
+def color_dev(val):
+    if val < -10:
+        return "background-color:red;color:white"
+    elif val < -2:
+        return "background-color:orange"
+    elif val > 8:
+        return "background-color:green;color:white"
+    elif val > 2:
+        return "background-color:lightgreen"
+    else:
+        return "background-color:white"
 
-st.download_button(
-    label="Download Full Dashboard (ZIP)",
-    data=zip_buffer.getvalue(),
-    file_name="WindFarm_Report.zip",
-    mime="application/zip"
-)
+styled_df = results_df.style.applymap(color_dev, subset=["Deviation_%"])
+
+st.dataframe(styled_df, use_container_width=True)
