@@ -78,8 +78,8 @@ def load_scada(file):
 
 df, wind_col, power_col, time_col = load_scada(uploaded_file)
 
-# DATE FILTER
-st.sidebar.markdown("## 📅 Select Date & Time Range")
+# ================= FIXED DATE FILTER =================
+st.sidebar.markdown("## 📅 Select Date Range")
 
 min_date = df[time_col].min()
 max_date = df[time_col].max()
@@ -98,11 +98,15 @@ else:
     end_date = date_range
 
 start_datetime = pd.to_datetime(start_date)
-end_datetime = pd.to_datetime(end_date) + timedelta(days=1) - timedelta(seconds=1)
+end_datetime = pd.to_datetime(end_date) + pd.Timedelta(days=1)
 
-df = df[(df[time_col] >= start_datetime) & (df[time_col] <= end_datetime)]
+df = df[
+    (df[time_col] >= start_datetime) &
+    (df[time_col] < end_datetime)
+]
 
 st.info(f"Total Data Points After Filter: {len(df)}")
+# =====================================================
 
 # HEADER
 num_turbines = df["Name"].nunique()
@@ -163,7 +167,7 @@ def process_turbine(t):
 
     return df_scatter, merged, avg_dev, availability
 
-# GRAPH (🔥 FIXED SCATTER VISIBILITY)
+# GRAPH
 def plot_graph(df_scatter, merged, title, dev, availability):
 
     n = len(df_scatter)
@@ -199,6 +203,10 @@ def plot_graph(df_scatter, merged, title, dev, availability):
         line=dict(dash='dash'),
         name="Reference Curve"
     ))
+
+    fig.update_layout(
+        title=f"{title} (Dev: {round(dev,2)}%) | Data: {round(availability,1)}%"
+    )
 
     return fig
 
@@ -238,15 +246,15 @@ results_df = pd.DataFrame(results).sort_values(by="Deviation_%")
 
 def color_dev(val):
     if val < -10:
-        return "background-color:red;color:white"
+        return "background-color:#ff4d4d;color:white"
     elif val < -2:
-        return "background-color:orange"
+        return "background-color:#ffcc66"
     elif val > 8:
-        return "background-color:green;color:white"
+        return "background-color:#009933;color:white"
     elif val > 2:
-        return "background-color:lightgreen"
+        return "background-color:#66ff66"
     else:
-        return "background-color:white"
+        return "background-color:#ccffcc"
 
 styled_df = results_df.style.applymap(color_dev, subset=["Deviation_%"])
 
