@@ -6,207 +6,108 @@ from scipy.signal import savgol_filter
 from datetime import timedelta
 import os
 import io
-import tempfile
-
-from openpyxl import Workbook
-from openpyxl.styles import PatternFill, Font
-from openpyxl.drawing.image import Image as XLImage
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
 
 st.set_page_config(layout="wide")
 
-# SAFE KALEIDO CHECK
-try:
-    import kaleido
-    KALEIDO_AVAILABLE = True
-except:
-    KALEIDO_AVAILABLE = False
-
-# LOGO
+# ---------------- LOGO ----------------
 logo_path = os.path.join(os.path.dirname(__file__), "Envision.png")
 col1, col2, col3 = st.columns([1,2,1])
 with col2:
     if os.path.exists(logo_path):
         st.image(logo_path, width=300)
 
-# TITLE
 st.title("Power Curve Analytics Report")
 
-# SITE CAPACITY
-SITE_CAPACITY = {site:3.3 for site in [
-"CIP Hatalageri","JSW Tuljapur","Blupine Sagapara","Kalavad GJ","Kalavad_PH2",
-"AMP_Energy","Wanki","CleanMax Motadevaliya","Ayana Amerli","Mahadev PH1",
-"Blupine-I, Ambada-GJ","ACME Shapar","FP_Kudligi","Sprng TN",
-"Otha Pithalpur-GJ","AMGEPL,Kurnool AP","ReNew1_Gadag","partner Ottapidaum",
-"Cleanmax SANATHALI","Cleanmax Babra","RenfraEnergy Trichy","RENEW-03 Sholapur",
-"Renew2 Chandwad","ReNew-4 Patoda","Clean max Jagalur","Sembcorp Tuticorin",
-"Renew-4 Kudligi","Renew Otha","Cleanmax Honavad","Blueleaf Agar",
-"JSW_Sandur","India_Hero_Doni"
-]}
-
-REF_FILE = "India site Standard & Theoretical PC data 1234.xlsx"
+# ---------------- CONSTANTS ----------------
 BIN_SIZE = 0.5
+REF_FILE = "India site Standard & Theoretical PC data 1234.xlsx"
 
-# SIDEBAR
-st.sidebar.subheader("Upload SCADA File")
+# ---------------- SIDEBAR ----------------
 uploaded_file = st.sidebar.file_uploader("Upload SCADA CSV", type=["csv"])
 
 if uploaded_file is None:
-    st.warning("Please upload SCADA file")
+    st.warning("Upload SCADA file")
     st.stop()
 
-site = st.sidebar.selectbox("Select Site", list(SITE_CAPACITY.keys()))
-
-mode = st.sidebar.radio(
-    "Select View",
-    ["Single Turbine", "Compare Turbines", "Show All Turbines"]
-)
-
-# LOAD SCADA
+# ---------------- LOAD ----------------
 @st.cache_data
 def load_scada(file):
-    df = pd.read_csv(file, low_memory=False)
+    df = pd.read_csv(file)
     df.columns = df.columns.str.strip()
 
     wind_col = [c for c in df.columns if "wind" in c.lower()][0]
     power_col = [c for c in df.columns if "power" in c.lower() or "active" in c.lower()][0]
     time_col = [c for c in df.columns if "time" in c.lower()][0]
 
-    df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
+    df[time_col] = pd.to_datetime(df[time_col])
     df[wind_col] = pd.to_numeric(df[wind_col], errors="coerce")
     df[power_col] = pd.to_numeric(df[power_col], errors="coerce")
 
-    df = df.dropna(subset=[wind_col,power_col,time_col])
-    df["Name"] = df["Name"].astype(str).str.strip()
+    df = df.dropna()
+    df["Name"] = df["Name"].astype(str)
 
     return df, wind_col, power_col, time_col
 
 df, wind_col, power_col, time_col = load_scada(uploaded_file)
 
-# ✅ FIXED DATE FILTER (monthly issue solved)
-st.sidebar.markdown("## 📅 Select Date Range")
-
+# ---------------- DATE FIX ----------------
 min_date = df[time_col].min()
 max_date = df[time_col].max()
 
 date_range = st.sidebar.date_input(
     "Select Date Range",
-    value=[max_date - timedelta(days=15), max_date],
-    min_value=min_date,
-    max_value=max_date
+    [max_date - timedelta(days=15), max_date]
 )
 
-if isinstance(date_range, list) and len(date_range) == 2:
-    start_date, end_date = date_range
-else:
-    start_date = date_range
-    end_date = date_range
+start = pd.to_datetime(date_range[0])
+end = pd.to_datetime(date_range[1]) + pd.Timedelta(days=1)
 
-start_datetime = pd.to_datetime(start_date)
-end_datetime = pd.to_datetime(end_date) + pd.Timedelta(days=1)
+df = df[(df[time_col] >= start) & (df[time_col] < end)]
 
-df = df[(df[time_col] >= start_datetime) & (df[time_col] < end_datetime)]
+st.info(f"Data Points: {len(df)}")
 
-st.info(f"Total Data Points After Filter: {len(df)}")
-
-# HEADER
-num_turbines = df["Name"].nunique()
-capacity_per_turbine = SITE_CAPACITY.get(site, 3.3)
-total_capacity = num_turbines * capacity_per_turbine
-
-st.subheader(f"{site} | {num_turbines} Turbines | Total: {round(total_capacity,2)} MW")
-
-# LOAD REFERENCE
+# ---------------- REFERENCE ----------------
 @st.cache_data
-def load_reference(site):
-    ref_raw = pd.read_excel(REF_FILE, header=None)
+def load_reference():
+    ref = pd.read_excel(REF_FILE)
+    ref.columns = ["WindBin", "RefPower"]
+    return ref
 
-    for r in range(ref_raw.shape[0]):
-        for c in range(ref_raw.shape[1]):
-            if site.lower() in str(ref_raw.iloc[r,c]).lower():
-                ref = ref_raw.iloc[r+2:r+60,[c-1,c+3]].copy()
-                ref.columns=["WindSpeed","RefPower"]
-                ref = ref.dropna()
+ref_curve = load_reference()
 
-                ref["WindSpeed"]=pd.to_numeric(ref["WindSpeed"], errors="coerce")
-                ref["RefPower"]=pd.to_numeric(ref["RefPower"], errors="coerce")
-
-                wind_bins = np.arange(4,10,BIN_SIZE)
-                ref_interp = np.interp(wind_bins, ref["WindSpeed"], ref["RefPower"])
-
-                return pd.DataFrame({"WindBin":wind_bins,"RefPower":ref_interp})
-
-    st.error("Site not found")
-    st.stop()
-
-ref_curve = load_reference(site)
-
-# PROCESS
+# ---------------- PROCESS ----------------
 def process_turbine(t):
-    df_all = df[df["Name"]==t].copy()
-    df_scatter = df_all.copy()
+    d = df[df["Name"] == t]
 
-    df_curve = df_all[(df_all[wind_col]>=3)&(df_all[wind_col]<=25)&(df_all[power_col]>0)]
-    if len(df_curve)<30:
+    df_scatter = d.copy()
+
+    df_curve = d[(d[wind_col] >= 3) & (d[power_col] > 0)]
+
+    if len(df_curve) < 20:
         return None
 
-    df_curve["WindBin"] = (df_curve[wind_col]/BIN_SIZE).round()*BIN_SIZE
-    actual = df_curve.groupby("WindBin").agg(AvgPower=(power_col,"mean")).reset_index()
+    df_curve["WindBin"] = (df_curve[wind_col] / BIN_SIZE).round() * BIN_SIZE
+    actual = df_curve.groupby("WindBin")[power_col].mean().reset_index()
+    actual.columns = ["WindBin", "AvgPower"]
 
-    merged = ref_curve.merge(actual,on="WindBin",how="left")
+    merged = ref_curve.merge(actual, on="WindBin", how="left")
 
     valid = merged["AvgPower"].notna()
-    if valid.sum()>7:
-        merged.loc[valid,"AvgPower"] = savgol_filter(merged.loc[valid,"AvgPower"],7,2)
+    if valid.sum() > 5:
+        merged.loc[valid, "AvgPower"] = savgol_filter(merged.loc[valid, "AvgPower"], 5, 2)
 
-    merged["Deviation_%"] = ((merged["AvgPower"]-merged["RefPower"])/merged["RefPower"])*100
-    avg_dev = merged["Deviation_%"].mean(skipna=True)
+    merged["Deviation_%"] = ((merged["AvgPower"] - merged["RefPower"]) / merged["RefPower"]) * 100
+    dev = merged["Deviation_%"].mean()
 
-    availability = (len(df_curve)/len(df_all))*100 if len(df_all)>0 else 0
+    availability = (len(df_curve) / len(d)) * 100
 
-    return df_scatter, merged, avg_dev, availability
+    return df_scatter, merged, dev, availability
 
-# GRAPH
-def plot_graph(df_scatter, merged, title, dev, availability):
-    n = len(df_scatter)
-
-    if n < 200:
-        size, op = 7, 0.9
-    elif n < 1000:
-        size, op = 5, 0.6
-    else:
-        size, op = 3, 0.3
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatter(
-        x=df_scatter[wind_col],
-        y=df_scatter[power_col],
-        mode='markers',
-        marker=dict(size=size, opacity=op),
-        name=f"Scatter ({n})"
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=merged["WindBin"],
-        y=merged["AvgPower"],
-        mode='lines+markers',
-        name="Actual Curve"
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=merged["WindBin"],
-        y=merged["RefPower"],
-        mode='lines',
-        line=dict(dash='dash'),
-        name="Reference Curve"
-    ))
-
-    fig.update_layout(title=f"{title} (Dev: {round(dev,2)}%) | Data: {round(availability,1)}%")
-
-    return fig
-
-# COMMENT
-def generate_comment(dev):
+# ---------------- COMMENT ----------------
+def comment(dev):
     if dev < -10:
         return "Severe underperformance"
     elif dev < -2:
@@ -216,72 +117,105 @@ def generate_comment(dev):
     elif dev > 2:
         return "Slight overperformance"
     else:
-        return "Normal performance"
+        return "Normal"
 
-# DISPLAY
+# ---------------- GRAPH ----------------
+def plot_graph(df_scatter, merged, t):
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=df_scatter[wind_col],
+        y=df_scatter[power_col],
+        mode='markers',
+        marker=dict(size=3, opacity=0.3),
+        name="Scatter"
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=merged["WindBin"],
+        y=merged["AvgPower"],
+        mode='lines+markers',
+        name="Actual"
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=merged["WindBin"],
+        y=merged["RefPower"],
+        mode='lines',
+        name="Reference"
+    ))
+
+    return fig
+
+# ---------------- DISPLAY ----------------
 results = []
+images = []
 
 for t in df["Name"].unique():
     res = process_turbine(t)
     if not res:
         continue
 
-    df_scatter, merged, dev, availability = res
-    fig = plot_graph(df_scatter, merged, t, dev, availability)
+    df_scatter, merged, dev, avail = res
 
+    fig = plot_graph(df_scatter, merged, t)
     st.plotly_chart(fig, use_container_width=True)
-    st.write(generate_comment(dev))
 
-    results.append({
-        "Turbine": t,
-        "Deviation_%": round(dev, 2),
-        "Availability_%": round(availability,1)
-    })
+    st.write(f"Comment: {comment(dev)}")
 
-# TABLE
-results_df = pd.DataFrame(results).sort_values(by="Deviation_%")
-st.dataframe(results_df)
+    img_bytes = fig.to_image(format="png")
+    images.append((t, img_bytes, dev, avail))
 
-# ================= EXCEL REPORT =================
-wb = Workbook()
-ws = wb.active
+    results.append([t, round(dev,2), round(avail,1)])
 
-row_cursor = 1
+# ---------------- TABLE ----------------
+st.subheader("Ranking")
+df_res = pd.DataFrame(results, columns=["Turbine","Deviation","Availability"])
+st.dataframe(df_res)
 
-for t in df["Name"].unique():
-    res = process_turbine(t)
-    if not res:
-        continue
+# ---------------- PDF GENERATION ----------------
+def create_pdf():
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer)
+    styles = getSampleStyleSheet()
 
-    df_scatter, merged, dev, availability = res
-    fig = plot_graph(df_scatter, merged, t, dev, availability)
+    elements = []
 
-    ws.cell(row=row_cursor, column=1, value=f"Turbine: {t}")
-    row_cursor += 1
+    elements.append(Paragraph("Wind Farm Report", styles["Title"]))
+    elements.append(Spacer(1, 20))
 
-    ws.cell(row=row_cursor, column=1, value=f"Deviation: {round(dev,2)}%")
-    ws.cell(row=row_cursor, column=2, value=f"Availability: {round(availability,1)}%")
-    row_cursor += 1
+    for t, img, dev, avail in images:
+        elements.append(Paragraph(f"{t}", styles["Heading2"]))
+        elements.append(Paragraph(f"Deviation: {round(dev,2)}%", styles["Normal"]))
+        elements.append(Paragraph(f"Availability: {round(avail,1)}%", styles["Normal"]))
+        elements.append(Paragraph(f"Comment: {comment(dev)}", styles["Normal"]))
+        elements.append(Spacer(1,10))
 
-    ws.cell(row=row_cursor, column=1, value=generate_comment(dev))
-    row_cursor += 2
+        img_file = io.BytesIO(img)
+        elements.append(Image(img_file, width=400, height=250))
+        elements.append(Spacer(1,20))
 
-    if KALEIDO_AVAILABLE:
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-        fig.write_image(tmp.name)
+    # Table
+    table = Table([["Turbine","Deviation","Availability"]] + results)
 
-        img = XLImage(tmp.name)
-        img.width = 500
-        img.height = 300
-        ws.add_image(img, f"A{row_cursor}")
+    table.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.grey),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
+        ('GRID',(0,0),(-1,-1),1,colors.black)
+    ]))
 
-        row_cursor += 20
+    elements.append(table)
 
-excel_buffer = io.BytesIO()
-wb.save(excel_buffer)
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+# ---------------- DOWNLOAD ----------------
+pdf = create_pdf()
 
 st.download_button(
-    label="Download Full Report",
-    data=excel_buffer.getvalue(),
-    file_name="WindFarm_Report.xlsx"
+    "Download Full Report (PDF)",
+    data=pdf,
+    file_name="Wind_Report.pdf",
+    mime="application/pdf"
 )
