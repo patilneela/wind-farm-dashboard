@@ -7,10 +7,7 @@ from datetime import timedelta
 import os
 import io
 
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Image,
-    Table, TableStyle, PageBreak
-)
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
@@ -37,7 +34,7 @@ if uploaded_file is None:
     st.warning("Upload SCADA file")
     st.stop()
 
-# ---------------- LOAD ----------------
+# ---------------- LOAD DATA ----------------
 @st.cache_data
 def load_scada(file):
     df = pd.read_csv(file)
@@ -47,7 +44,7 @@ def load_scada(file):
     power_col = [c for c in df.columns if "power" in c.lower() or "active" in c.lower()][0]
     time_col = [c for c in df.columns if "time" in c.lower()][0]
 
-    df[time_col] = pd.to_datetime(df[time_col])
+    df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
     df[wind_col] = pd.to_numeric(df[wind_col], errors="coerce")
     df[power_col] = pd.to_numeric(df[power_col], errors="coerce")
 
@@ -58,7 +55,7 @@ def load_scada(file):
 
 df, wind_col, power_col, time_col = load_scada(uploaded_file)
 
-# ---------------- DATE FILTER ----------------
+# ---------------- DATE FILTER (FIXED) ----------------
 min_date = df[time_col].min()
 max_date = df[time_col].max()
 
@@ -72,10 +69,10 @@ end = pd.to_datetime(date_range[1]) + pd.Timedelta(days=1)
 
 df = df[(df[time_col] >= start) & (df[time_col] < end)]
 
-st.info(f"Data Points: {len(df)}")
+st.info(f"Total Data Points: {len(df)}")
 st.markdown(f"**Date Range:** {start} → {end}")
 
-# ---------------- REFERENCE ----------------
+# ---------------- LOAD REFERENCE ----------------
 @st.cache_data
 def load_reference():
     ref = pd.read_excel(REF_FILE)
@@ -89,6 +86,7 @@ def process_turbine(t):
     d = df[df["Name"] == t]
 
     df_scatter = d.copy()
+
     df_curve = d[(d[wind_col] >= 3) & (d[power_col] > 0)]
 
     if len(df_curve) < 20:
@@ -102,15 +100,11 @@ def process_turbine(t):
 
     valid = merged["AvgPower"].notna()
     if valid.sum() > 5:
-        merged.loc[valid, "AvgPower"] = savgol_filter(
-            merged.loc[valid, "AvgPower"], 5, 2
-        )
+        merged.loc[valid, "AvgPower"] = savgol_filter(merged.loc[valid, "AvgPower"], 5, 2)
 
-    merged["Deviation_%"] = (
-        (merged["AvgPower"] - merged["RefPower"]) / merged["RefPower"]
-    ) * 100
-
+    merged["Deviation_%"] = ((merged["AvgPower"] - merged["RefPower"]) / merged["RefPower"]) * 100
     dev = merged["Deviation_%"].mean()
+
     availability = (len(df_curve) / len(d)) * 100
 
     return df_scatter, merged, dev, availability
@@ -118,26 +112,36 @@ def process_turbine(t):
 # ---------------- COMMENT ----------------
 def comment(dev):
     if dev < -10:
-        return "🔴 Severe underperformance"
+        return "Severe underperformance"
     elif dev < -2:
-        return "🟠 Underperformance"
+        return "Underperformance"
     elif dev > 8:
-        return "🟢 High overperformance"
+        return "High overperformance"
     elif dev > 2:
-        return "🟢 Slight overperformance"
+        return "Slight overperformance"
     else:
-        return "🟢 Normal"
+        return "Normal"
 
 # ---------------- GRAPH ----------------
-def plot_graph(df_scatter, merged):
+def plot_graph(df_scatter, merged, t):
+
+    n = len(df_scatter)
+
+    if n < 200:
+        size, op = 7, 0.9
+    elif n < 1000:
+        size, op = 5, 0.6
+    else:
+        size, op = 3, 0.3
+
     fig = go.Figure()
 
     fig.add_trace(go.Scatter(
         x=df_scatter[wind_col],
         y=df_scatter[power_col],
         mode='markers',
-        marker=dict(size=3, opacity=0.3),
-        name="Scatter"
+        marker=dict(size=size, opacity=op),
+        name=f"Scatter ({n})"
     ))
 
     fig.add_trace(go.Scatter(
@@ -151,6 +155,7 @@ def plot_graph(df_scatter, merged):
         x=merged["WindBin"],
         y=merged["RefPower"],
         mode='lines',
+        line=dict(dash='dash'),
         name="Reference"
     ))
 
@@ -167,53 +172,38 @@ for t in df["Name"].unique():
 
     df_scatter, merged, dev, avail = res
 
-    fig = plot_graph(df_scatter, merged)
+    fig = plot_graph(df_scatter, merged, t)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.write(f"Deviation: {round(dev,2)}%")
-    st.write(f"Availability: {round(avail,1)}%")
-    st.write(comment(dev))
+    st.write(f"Comment: {comment(dev)}")
 
-    # SAFE IMAGE EXPORT
-    try:
-        img_bytes = fig.to_image(format="png", engine="kaleido", width=900, height=500)
-    except:
-        img_bytes = None
-
-    if img_bytes:
-        images.append((t, img_bytes, dev, avail, comment(dev)))
+    img_bytes = fig.to_image(format="png")
+    images.append((t, img_bytes, dev, avail, comment(dev)))
 
     results.append([t, round(dev,2), round(avail,1)])
 
 # ---------------- TABLE ----------------
 st.subheader("Turbine Ranking")
+
 df_res = pd.DataFrame(results, columns=["Turbine","Deviation","Availability"])
-st.dataframe(df_res)
+st.dataframe(df_res, use_container_width=True)
 
-# ---------------- PDF ----------------
-def get_color(dev):
-    if dev < -10:
-        return colors.red
-    elif dev < -2:
-        return colors.orange
-    elif dev > 8:
-        return colors.green
-    elif dev > 2:
-        return colors.lightgreen
-    else:
-        return colors.whitesmoke
-
+# ---------------- PDF GENERATION ----------------
 def create_pdf():
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer)
     styles = getSampleStyleSheet()
+
     elements = []
 
+    # HEADER
     elements.append(Paragraph("Power Curve Analytics Report", styles["Title"]))
     elements.append(Spacer(1, 10))
     elements.append(Paragraph(f"Date Range: {start} to {end}", styles["Normal"]))
+    elements.append(Paragraph(f"Total Data Points: {len(df)}", styles["Normal"]))
     elements.append(Spacer(1, 20))
 
+    # TURBINE PAGES
     for t, img, dev, avail, comm in images:
         elements.append(Paragraph(f"Turbine: {t}", styles["Heading2"]))
         elements.append(Paragraph(f"Deviation: {round(dev,2)}%", styles["Normal"]))
@@ -221,43 +211,37 @@ def create_pdf():
         elements.append(Paragraph(f"Comment: {comm}", styles["Normal"]))
         elements.append(Spacer(1, 10))
 
-        if img:
-            img_file = io.BytesIO(img)
-            elements.append(Image(img_file, width=480, height=260))
-        else:
-            elements.append(Paragraph("Graph not available", styles["Normal"]))
+        img_file = io.BytesIO(img)
+        elements.append(Image(img_file, width=450, height=250))
 
         elements.append(PageBreak())
 
     # TABLE
     table_data = [["Turbine","Deviation","Availability"]] + results
+
     table = Table(table_data)
 
-    style = TableStyle([
+    table.setStyle(TableStyle([
         ('BACKGROUND',(0,0),(-1,0),colors.grey),
         ('TEXTCOLOR',(0,0),(-1,0),colors.white),
         ('GRID',(0,0),(-1,-1),1,colors.black)
-    ])
-
-    for i, row in enumerate(results, start=1):
-        style.add('BACKGROUND', (1,i), (1,i), get_color(row[1]))
-
-    table.setStyle(style)
+    ]))
 
     elements.append(Paragraph("Turbine Ranking", styles["Heading2"]))
-    elements.append(Spacer(1,10))
+    elements.append(Spacer(1, 10))
     elements.append(table)
 
     doc.build(elements)
+
     buffer.seek(0)
-    return buffer
+    return buffer.getvalue()   #  CRITICAL FIX
 
 # ---------------- DOWNLOAD ----------------
-pdf = create_pdf()
+pdf_bytes = create_pdf()
 
 st.download_button(
-    "⬇ Download Full Report (PDF)",
-    data=pdf,
-    file_name="WindFarm_Report.pdf",
+    label="Download Full Dashboard Report (PDF)",
+    data=pdf_bytes,
+    file_name="WindFarm_Full_Report.pdf",
     mime="application/pdf"
 )
